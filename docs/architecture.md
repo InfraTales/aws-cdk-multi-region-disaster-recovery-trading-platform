@@ -1,0 +1,14 @@
+# Architecture Notes
+
+## Overview
+
+Problem A deploys two mirrored CDK stacks — primary in us-east-1, DR in us-west-2 — sharing reusable constructs for DynamoDB global tables (on-demand, PITR), S3 buckets with CRR lifecycle rules, SNS cross-region topics, Step Functions DR orchestration state machines, and Route53 weighted routing with health checks [from-code]. Problem B adds a single-region stack in us-east-1 with a VPC (2 public + 2 private subnets), PostgreSQL RDS on db.m4.large managed by Secrets Manager, a Node.js 14.x Lambda behind IAM-authenticated API Gateway, SQS for async processing, and CloudFront for static asset delivery [from-code]. A TypeScript deployment orchestrator class wraps CDK synth, deploy, and post-deploy validation in a single script, enforcing cross-region replication health checks as a hard gate before marking deployment complete [from-code]. CloudWatch dashboards aggregate metrics from both regions using cross-region metric math expressions rather than simple per-region dashboard widgets, which requires explicit cross-account IAM trust when the DR stack lives in a separate AWS account [inferred].
+
+## Key Decisions
+
+- DynamoDB global tables on-demand billing removes capacity planning overhead but can spike costs 3-5x during a DR drill that generates write amplification across both regions — budget for this before your first game day [inferred]
+- Node.js 14.x Lambda runtime reached end-of-life in November 2023; using it satisfies the prompt constraint but means you are deploying into a deprecated runtime that AWS will block for new deployments on a rolling schedule — this is a day-one tech debt item [editorial]
+- db.m4.large RDS is a previous-generation instance type; m5.large is the current equivalent and costs approximately 10-15% less on-demand while delivering up to 25% higher network throughput per AWS instance documentation, but the prompt locks you to m4.large — document this explicitly so the next engineer does not assume it was a deliberate choice [editorial]
+- Route53 weighted routing with health checks gives you manual-dial failover control, but automated failover via Route53 health checks has a minimum 30-second evaluation period — for a trading platform with sub-second SLAs, this TTL gap needs a circuit-breaker at the application layer too [inferred]
+- SSM Parameter Store SecureString replication across regions is not native — the deployment script has to handle cross-region parameter sync explicitly, which means your DR region's config can drift if the sync step is skipped or fails silently [from-code]
+- Step Functions DR testing state machines add orchestration visibility but the state machine IAM role needs cross-region Lambda:InvokeFunction permissions, which widens the blast radius of a compromised role to both regions simultaneously — scope resource ARN conditions to specific function ARNs and use a separate execution role per region to contain the exposure [inferred]
